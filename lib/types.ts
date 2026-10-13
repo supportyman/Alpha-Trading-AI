@@ -58,6 +58,7 @@ export interface EconomicEvent {
   impact: 'high' | 'medium' | 'low';
   time: string;
   date: string;
+  timestamp?: number;
   actual: string | null;
   forecast: string | null;
   previous: string | null;
@@ -68,6 +69,7 @@ export interface EconomicEvent {
 export interface SentimentData {
   score: number;
   mood: 'Extreme Fear' | 'Fear' | 'Neutral' | 'Greed' | 'Extreme Greed';
+  fng?: { value: number; label: string; source?: string } | null;
   twitter: number;
   reddit: number;
   telegram: number;

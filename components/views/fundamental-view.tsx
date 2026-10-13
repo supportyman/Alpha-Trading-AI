@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Newspaper, TrendingUp, TrendingDown, Minus, Filter, ExternalLink,
   RefreshCw, Loader2, Radio, CalendarClock, Clock, Building2, AlertCircle, AlertTriangle,
@@ -21,13 +21,34 @@ export function FundamentalView() {
   const filtered =
     filter === 'All' ? news : news.filter((n) => n.category === filter);
 
-  const bullScore = 68;
-  const bearScore = 22;
-  const expectedVol = 'High';
+  // Real scores derived from live news classification (keyword classifier on RSS headlines)
+  const bullCount = news.filter((n) => n.sentiment === 'bullish').length;
+  const bearCount = news.filter((n) => n.sentiment === 'bearish').length;
+  const bullScore = news.length > 0 ? Math.round((bullCount / news.length) * 100) : 0;
+  const bearScore = news.length > 0 ? Math.round((bearCount / news.length) * 100) : 0;
 
   const upcomingEvents = events.filter((e) => e.actual === null).slice(0, 8);
   const pastEvents = events.filter((e) => e.actual !== null).slice(0, 4);
   const highImpactUpcoming = upcomingEvents.filter((e) => e.impact === 'high');
+
+  // Real expected volatility from the live economic calendar
+  const expectedVol = highImpactUpcoming.length >= 3 ? 'High' : highImpactUpcoming.length >= 1 ? 'Moderate' : 'Low';
+  const volBarLevel = expectedVol === 'High' ? 5 : expectedVol === 'Moderate' ? 3 : 1;
+
+  // Real countdown to the next high-impact event
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(t);
+  }, []);
+  const nextHigh = highImpactUpcoming.find((e) => e.timestamp && e.timestamp > now) ?? null;
+  const formatCountdown = (ms: number) => {
+    const m = Math.floor(ms / 60000);
+    if (m < 60) return `${m}m`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ${m % 60}m`;
+    return `${Math.floor(h / 24)}d ${h % 24}h`;
+  };
 
   return (
     <div className="space-y-6">
@@ -42,7 +63,9 @@ export function FundamentalView() {
             <div className="mt-3 h-2 overflow-hidden rounded-full bg-secondary">
               <div className="h-full rounded-full bg-success" style={{ width: `${bullScore}%` }} />
             </div>
-            <p className="mt-2 text-xs text-muted-foreground">8 bullish catalysts detected</p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              {bullCount} bullish headlines of {news.length} classified live
+            </p>
           </CardContent>
         </Card>
         <Card>
@@ -54,7 +77,9 @@ export function FundamentalView() {
             <div className="mt-3 h-2 overflow-hidden rounded-full bg-secondary">
               <div className="h-full rounded-full bg-destructive" style={{ width: `${bearScore}%` }} />
             </div>
-            <p className="mt-2 text-xs text-muted-foreground">3 bearish catalysts detected</p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              {bearCount} bearish headlines of {news.length} classified live
+            </p>
           </CardContent>
         </Card>
         <Card>
@@ -69,15 +94,15 @@ export function FundamentalView() {
                   key={i}
                   className={cn(
                     'h-2 flex-1 rounded-full',
-                    i <= 4 ? 'bg-warning' : 'bg-secondary'
+                    i <= volBarLevel ? 'bg-warning' : 'bg-secondary'
                   )}
                 />
               ))}
             </div>
             <p className="mt-2 text-xs text-muted-foreground">
-              {highImpactUpcoming.length > 0
-                ? `${highImpactUpcoming.length} high-impact events this week`
-                : 'FOMC meeting in 2 days'}
+              {nextHigh
+                ? `Next high-impact: ${nextHigh.title.slice(0, 40)}${nextHigh.title.length > 40 ? '…' : ''} · in ${formatCountdown((nextHigh.timestamp ?? 0) - now)}`
+                : `${highImpactUpcoming.length} high-impact events this week`}
             </p>
           </CardContent>
         </Card>

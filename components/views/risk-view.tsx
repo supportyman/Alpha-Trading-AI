@@ -24,6 +24,17 @@ import type { JournalEntry } from '@/lib/types';
 import { formatPrice } from '@/lib/use-live-market';
 import { cn } from '@/lib/utils';
 
+const DEFAULT_SETTINGS = {
+  maxDailyLoss: '3',
+  maxOpenPositions: '5',
+  maxRiskPerTrade: '2',
+  maxPortfolioRisk: '8',
+  minRiskReward: '1:2',
+  minSignalConfidence: '80',
+  trailingStopDefault: 'ATR-based',
+  maxWeeklyDrawdown: '15',
+};
+
 export function RiskView() {
   const [entries, setEntries] = useState<JournalEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -127,16 +138,44 @@ export function RiskView() {
   // Stats
   const wins = entries.filter((e) => e.outcome === 'win');
   const losses = entries.filter((e) => e.outcome === 'loss');
-  const winRate = entries.length > 0 ? (wins.length / (wins.length + losses.length)) * 100 : 0;
-  const totalPnl = entries.reduce((sum, e) => sum + (e.pnl || 0), 0);
-  const maxDrawdown = 8.4;
+  const closed = entries.filter((e) => e.outcome === 'win' || e.outcome === 'loss');
+  const winRate = closed.length > 0 ? (wins.length / closed.length) * 100 : 0;
+  const totalPnl = closed.reduce((sum, e) => sum + (e.pnl || 0), 0);
+  // Real max drawdown from closed-trade equity curve
+  let eqPeak = -Infinity;
+  let eqRun = 0;
+  let dd = 0;
+  for (const e of closed) {
+    eqRun += e.pnl || 0;
+    if (eqRun > eqPeak) eqPeak = eqRun;
+    if (eqPeak > 0) dd = Math.max(dd, ((eqPeak - eqRun) / eqPeak) * 100);
+  }
+  const maxDrawdown = dd;
+
+  // Editable risk settings persisted in localStorage
+  const [settings, setSettings] = useState(() => {
+    if (typeof window === 'undefined') return DEFAULT_SETTINGS;
+    try {
+      const raw = localStorage.getItem('alphatrade-risk-settings');
+      return raw ? { ...DEFAULT_SETTINGS, ...JSON.parse(raw) } : DEFAULT_SETTINGS;
+    } catch {
+      return DEFAULT_SETTINGS;
+    }
+  });
+  const updateSetting = (key: keyof typeof DEFAULT_SETTINGS, value: string) => {
+    const next = { ...settings, [key]: value };
+    setSettings(next);
+    try { localStorage.setItem('alphatrade-risk-settings', JSON.stringify(next)); } catch { /* ignore */ }
+  };
+
+  const dailyMaxLossUsd = Math.round((accountSize * (parseFloat(settings.maxDailyLoss) || 3)) / 100);
 
   return (
     <div className="space-y-6">
       {/* Risk stats */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <RiskStat label="Daily Risk Limit" value="3%" sub="$6,000 max loss" tone="primary" />
-        <RiskStat label="Max Drawdown" value={`${maxDrawdown}%`} sub="Limit: 15%" tone="warning" />
+        <RiskStat label="Daily Risk Limit" value={`${settings.maxDailyLoss}%`} sub={`$${dailyMaxLossUsd.toLocaleString()} max loss`} tone="primary" />
+        <RiskStat label="Max Drawdown" value={`${maxDrawdown.toFixed(1)}%`} sub={`Limit: ${settings.maxWeeklyDrawdown}%`} tone="warning" />
         <RiskStat label="Win Rate" value={`${winRate.toFixed(1)}%`} sub={`${wins.length}W / ${losses.length}L`} tone="success" />
         <RiskStat label="Total P&L" value={`$${totalPnl.toLocaleString()}`} sub="Realized" tone={totalPnl >= 0 ? 'success' : 'destructive'} />
       </div>
@@ -210,14 +249,15 @@ export function RiskView() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            <RiskSetting label="Max Daily Loss" value="3% of account" />
-            <RiskSetting label="Max Open Positions" value="5" />
-            <RiskSetting label="Max Risk per Trade" value="2% of account" />
-            <RiskSetting label="Max Portfolio Risk" value="8% total" />
-            <RiskSetting label="Min Risk/Reward" value="1:2" />
-            <RiskSetting label="Min Signal Confidence" value="80%" />
-            <RiskSetting label="Trailing Stop Default" value="ATR-based" />
-            <RiskSetting label="Max Weekly Drawdown" value="15%" />
+            <RiskSetting label="Max Daily Loss (%)" value={settings.maxDailyLoss} onChange={(v) => updateSetting('maxDailyLoss', v)} suffix="% of account" />
+            <RiskSetting label="Max Open Positions" value={settings.maxOpenPositions} onChange={(v) => updateSetting('maxOpenPositions', v)} />
+            <RiskSetting label="Max Risk per Trade (%)" value={settings.maxRiskPerTrade} onChange={(v) => updateSetting('maxRiskPerTrade', v)} suffix="% of account" />
+            <RiskSetting label="Max Portfolio Risk (%)" value={settings.maxPortfolioRisk} onChange={(v) => updateSetting('maxPortfolioRisk', v)} suffix="% total" />
+            <RiskSetting label="Min Risk/Reward" value={settings.minRiskReward} onChange={(v) => updateSetting('minRiskReward', v)} prefix="1:" />
+            <RiskSetting label="Min Signal Confidence" value={settings.minSignalConfidence} onChange={(v) => updateSetting('minSignalConfidence', v)} suffix="%" />
+            <RiskSetting label="Trailing Stop Default" value={settings.trailingStopDefault} onChange={(v) => updateSetting('trailingStopDefault', v)} />
+            <RiskSetting label="Max Weekly Drawdown (%)" value={settings.maxWeeklyDrawdown} onChange={(v) => updateSetting('maxWeeklyDrawdown', v)} suffix="%" />
+            <p className="pt-1 text-[10px] text-muted-foreground">Settings saved locally in this browser.</p>
           </CardContent>
         </Card>
       </div>
@@ -574,11 +614,31 @@ function CalcRow({ label, value, highlight }: { label: string; value: string; hi
   );
 }
 
-function RiskSetting({ label, value }: { label: string; value: string }) {
+function RiskSetting({
+  label,
+  value,
+  onChange,
+  prefix,
+  suffix,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  prefix?: string;
+  suffix?: string;
+}) {
   return (
-    <div className="flex items-center justify-between rounded-md border border-border bg-secondary/30 px-3 py-2">
+    <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-secondary/30 px-3 py-2">
       <span className="text-xs font-medium">{label}</span>
-      <span className="font-mono text-xs text-primary">{value}</span>
+      <span className="flex items-center gap-1">
+        {prefix && <span className="font-mono text-[10px] text-muted-foreground">{prefix}</span>}
+        <Input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="h-7 w-20 px-2 text-right font-mono text-xs"
+        />
+        {suffix && <span className="text-[10px] text-muted-foreground">{suffix}</span>}
+      </span>
     </div>
   );
 }

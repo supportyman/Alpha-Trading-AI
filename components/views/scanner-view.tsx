@@ -29,7 +29,9 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ConfidenceRing } from '@/components/confidence-ring';
-import { useLiveMarket, formatPrice } from '@/lib/use-live-market';
+import { useLiveMarket, formatPrice, formatPct } from '@/lib/use-live-market';
+import { useLiveGlobal } from '@/lib/use-live-global';
+import { Sparkline } from '@/components/sparkline';
 import { runScanner } from '@/lib/scanner-engine';
 import type { ScannerResult, StrategyType, SignalDirection } from '@/lib/types';
 import { cn } from '@/lib/utils';
@@ -42,6 +44,7 @@ const STRATEGY_META: Record<StrategyType, { label: string; icon: React.Component
 
 export function ScannerView() {
   const coins = useLiveMarket(30000);
+  const { data: global } = useLiveGlobal();
   const [results, setResults] = useState<ScannerResult[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastScan, setLastScan] = useState<Date | null>(null);
@@ -95,8 +98,17 @@ export function ScannerView() {
   const avgConfidence = results.length > 0 ? results.reduce((s, r) => s + r.confidence, 0) / results.length : 0;
   const marketTrend = bullCount > bearCount ? 'Bullish' : bearCount > bullCount ? 'Bearish' : 'Neutral';
 
-  // 7-day history (generated from scan patterns)
-  const history = genHistory();
+  // Real 7-day performance from CoinGecko sparkline data (live)
+  const sevenDay = coins
+    .map((c) => {
+      const s = c.sparkline ?? [];
+      const first = s[0];
+      const last = s[s.length - 1];
+      const ch7d = first && last ? ((last - first) / first) * 100 : null;
+      return { ...c, ch7d };
+    })
+    .filter((c) => c.ch7d !== null)
+    .sort((a, b) => (b.ch7d ?? 0) - (a.ch7d ?? 0));
 
   return (
     <div className="space-y-6">
@@ -118,7 +130,7 @@ export function ScannerView() {
           <div className="flex items-center gap-3">
             {loading ? (
               <span className="flex items-center gap-2 text-xs text-primary">
-                <Radio className="h-3.5 w-3.5 animate-pulse" /> Scanning all USDT pairs…
+                <Radio className="h-3.5 w-3.5 animate-pulse" /> Scanning 15 major coins…
               </span>
             ) : lastScan ? (
               <span className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -164,10 +176,10 @@ export function ScannerView() {
         />
         <TrendCard
           label="BTC Dominance"
-          value="58.4%"
+          value={global?.btcDominance != null ? `${global.btcDominance.toFixed(1)}%` : '—'}
           icon={BarChart3}
           tone="warning"
-          sub="Capital in BTC"
+          sub="Live · CoinGecko"
         />
       </div>
 
@@ -181,7 +193,7 @@ export function ScannerView() {
             </div>
             <p className="text-sm font-medium">Scanning entire crypto market…</p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Fetching live data across 5 timeframes (15M, 1H, 4H, 1D, 1W) for all USDT pairs
+              Fetching live data across 5 timeframes (15M, 1H, 4H, 1D, 1W) for 15 major coins
             </p>
           </CardContent>
         </Card>
@@ -314,38 +326,34 @@ export function ScannerView() {
             </Card>
           </div>
 
-          {/* 7-day history */}
+          {/* Real 7-day market performance (from live sparkline data) */}
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-base">
                 <BarChart3 className="h-4 w-4 text-primary" />
-                Last 7 Days Performance History
+                7-Day Market Performance
+                <Badge variant="outline" className="border-success/40 text-[10px] font-normal text-success">
+                  <span className="mr-1 h-1.5 w-1.5 rounded-full bg-success animate-pulse" /> Live
+                </Badge>
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-4 lg:grid-cols-7">
-                {history.map((h) => (
-                  <div key={h.date} className="rounded-lg border border-border bg-secondary/30 p-3">
-                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{h.date}</p>
-                    <p className="mt-1 text-lg font-bold text-primary">{h.signalsFound}</p>
-                    <p className="text-[10px] text-muted-foreground">signals</p>
-                    <div className="mt-2 flex gap-1">
-                      <div className="flex-1 text-center">
-                        <p className="text-[9px] text-accent">S</p>
-                        <p className="text-xs font-semibold">{h.scalping}</p>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+                {sevenDay.slice(0, 10).map((c) => {
+                  const up = (c.ch7d ?? 0) >= 0;
+                  return (
+                    <div key={c.symbol} className="rounded-lg border border-border bg-secondary/30 p-3">
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs font-semibold">{c.symbol.split('/')[0]}</p>
+                        <Sparkline data={c.sparkline} positive={up} width={64} height={22} />
                       </div>
-                      <div className="flex-1 text-center">
-                        <p className="text-[9px] text-primary">D</p>
-                        <p className="text-xs font-semibold">{h.day}</p>
-                      </div>
-                      <div className="flex-1 text-center">
-                        <p className="text-[9px] text-warning">W</p>
-                        <p className="text-xs font-semibold">{h.swing}</p>
-                      </div>
+                      <p className={cn('mt-1.5 text-lg font-bold', up ? 'text-success' : 'text-destructive')}>
+                        {formatPct(c.ch7d ?? 0)}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground">7d · ${formatPrice(c.price)}</p>
                     </div>
-                    <p className="mt-1.5 text-[10px] text-muted-foreground">avg {h.avgConfidence}%</p>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </CardContent>
           </Card>
@@ -703,16 +711,4 @@ function timeAgo(iso: string): string {
   const s = Math.floor((diff % 60000) / 1000);
   if (m > 0) return `${m}m ago`;
   return `${s}s ago`;
-}
-
-function genHistory() {
-  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-  return days.map((date, i) => ({
-    date,
-    signalsFound: 6 + ((i * 3) % 5),
-    avgConfidence: 82 + ((i * 7) % 12),
-    scalping: 2 + ((i * 2) % 3),
-    day: 2 + ((i * 3) % 3),
-    swing: 1 + ((i * 5) % 4),
-  }));
 }

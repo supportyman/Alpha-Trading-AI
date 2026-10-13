@@ -21,7 +21,8 @@ import { Button } from '@/components/ui/button';
 import { Sparkline } from '@/components/sparkline';
 import { ConfidenceRing } from '@/components/confidence-ring';
 import { useLiveMarket, formatPrice, formatPct, formatCompact } from '@/lib/use-live-market';
-import { INITIAL_NEWS, EXCHANGES } from '@/lib/market-data';
+import { useLiveNews } from '@/lib/use-live-news';
+import { useLiveGlobal } from '@/lib/use-live-global';
 import { useLiveSentiment } from '@/lib/use-live-sentiment';
 import { generateSignals } from '@/lib/signal-engine';
 import type { TradeSignal, ViewKey } from '@/lib/types';
@@ -34,6 +35,8 @@ interface DashboardViewProps {
 export function DashboardView({ onNavigate }: DashboardViewProps) {
   const coins = useLiveMarket(5000);
   const { sentiment } = useLiveSentiment();
+  const { data: global } = useLiveGlobal();
+  const { news, usingLive: newsLive } = useLiveNews();
   const [signals, setSignals] = useState<TradeSignal[]>([]);
   const [signalsLoading, setSignalsLoading] = useState(true);
 
@@ -72,23 +75,27 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard
           label="Global Market Cap"
-          value="$3.42T"
-          change="+2.8%"
-          positive
+          value={global?.marketCap != null ? formatCompact(global.marketCap) : '—'}
+          change={global?.marketCapChange24h != null ? `24h ${formatPct(global.marketCapChange24h)}` : 'CoinGecko global'}
+          positive={(global?.marketCapChange24h ?? 1) >= 0}
           icon={Activity}
         />
         <StatCard
           label="BTC Dominance"
-          value="58.4%"
-          change="+0.6%"
-          positive
+          value={global?.btcDominance != null ? `${global.btcDominance.toFixed(1)}%` : '—'}
+          change={global?.ethDominance != null ? `ETH ${global.ethDominance.toFixed(1)}%` : 'Live from CoinGecko'}
+          neutral
           icon={TrendingUp}
         />
         <StatCard
           label="Fear & Greed"
-          value={`${sentiment.score} · ${sentiment.mood}`}
-          change={sentiment.score >= 50 ? 'Greed' : 'Fear'}
-          positive={sentiment.score >= 50}
+          value={
+            sentiment.fng
+              ? `${sentiment.fng.value} · ${sentiment.fng.label}`
+              : `${sentiment.score} · ${sentiment.mood}`
+          }
+          change={sentiment.fng ? 'alternative.me index' : 'Derived from price action'}
+          positive={(sentiment.fng ? sentiment.fng.value : sentiment.score) >= 50}
           icon={Gauge}
         />
         <StatCard
@@ -109,13 +116,8 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
               <Badge variant="outline" className="text-[10px] font-normal border-success/40 text-success">
                 <span className="mr-1 h-1.5 w-1.5 rounded-full bg-success animate-pulse" /> Live
               </Badge>
-              {EXCHANGES.slice(0, 3).map((ex) => (
-                <Badge key={ex} variant="outline" className="text-[10px] font-normal">
-                  {ex}
-                </Badge>
-              ))}
               <Badge variant="outline" className="text-[10px] font-normal text-muted-foreground">
-                +2
+                CoinGecko
               </Badge>
             </div>
           </CardHeader>
@@ -151,12 +153,15 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
             <CardTitle className="text-base">Market Sentiment</CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col items-center">
-            <SentimentGauge score={sentiment.score} />
+            <SentimentGauge
+              score={sentiment.fng ? sentiment.fng.value : sentiment.score}
+              label={sentiment.fng ? sentiment.fng.label : sentiment.mood}
+            />
             <div className="mt-3 grid w-full grid-cols-2 gap-2 text-center">
-              <MiniStat label="Twitter" value={sentiment.twitter} />
-              <MiniStat label="Reddit" value={sentiment.reddit} />
-              <MiniStat label="Telegram" value={sentiment.telegram} />
-              <MiniStat label="News" value={sentiment.news} />
+              <MiniStat label="Momentum" value={sentiment.twitter} />
+              <MiniStat label="Breadth" value={sentiment.reddit} />
+              <MiniStat label="Flow" value={sentiment.telegram} />
+              <MiniStat label="Headlines" value={sentiment.news} />
             </div>
             <Button
               variant="ghost"
@@ -278,16 +283,21 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
       {/* News feed */}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
-          <CardTitle className="text-base flex items-center gap-2">
-            <Newspaper className="h-4 w-4 text-accent" />
-            Fundamental News Feed
-          </CardTitle>
-          <Button variant="ghost" size="sm" className="h-8 text-xs text-primary" onClick={() => onNavigate('fundamental')}>
-            View all
-          </Button>
-        </CardHeader>
-        <CardContent className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
-          {INITIAL_NEWS.slice(0, 6).map((n) => (
+            <CardTitle className="text-base flex items-center gap-2">
+              <Newspaper className="h-4 w-4 text-accent" />
+              Fundamental News Feed
+              {newsLive && (
+                <Badge variant="outline" className="border-success/40 text-[10px] font-normal text-success">
+                  <span className="mr-1 h-1.5 w-1.5 rounded-full bg-success animate-pulse" /> Live
+                </Badge>
+              )}
+            </CardTitle>
+            <Button variant="ghost" size="sm" className="h-8 text-xs text-primary" onClick={() => onNavigate('fundamental')}>
+              View all
+            </Button>
+          </CardHeader>
+          <CardContent className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+            {news.slice(0, 6).map((n) => (
             <div key={n.id} className="rounded-lg border border-border bg-secondary/30 p-3">
               <div className="mb-2 flex items-center justify-between gap-2">
                 <Badge
@@ -320,12 +330,14 @@ function StatCard({
   value,
   change,
   positive,
+  neutral,
   icon: Icon,
 }: {
   label: string;
   value: string;
   change: string;
-  positive: boolean;
+  positive?: boolean;
+  neutral?: boolean;
   icon: React.ComponentType<{ className?: string }>;
 }) {
   return (
@@ -338,8 +350,13 @@ function StatCard({
           {label}
         </p>
         <p className="mt-1 text-xl font-bold tracking-tight">{value}</p>
-        <p className={cn('mt-0.5 flex items-center gap-1 text-xs', positive ? 'text-success' : 'text-destructive')}>
-          {positive ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
+        <p
+          className={cn(
+            'mt-0.5 flex items-center gap-1 text-xs',
+            neutral ? 'text-muted-foreground' : positive ? 'text-success' : 'text-destructive'
+          )}
+        >
+          {!neutral && (positive ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />)}
           {change}
         </p>
       </CardContent>
@@ -414,7 +431,7 @@ function MiniStat({ label, value }: { label: string; value: number }) {
   );
 }
 
-function SentimentGauge({ score }: { score: number }) {
+function SentimentGauge({ score, label }: { score: number; label: string }) {
   const angle = (score / 100) * 180 - 90;
   const color =
     score >= 75 ? 'hsl(var(--success))' : score >= 55 ? 'hsl(var(--primary))' : score >= 35 ? 'hsl(var(--warning))' : 'hsl(var(--destructive))';
@@ -441,7 +458,7 @@ function SentimentGauge({ score }: { score: number }) {
         <p className="text-2xl font-bold" style={{ color }}>
           {score}
         </p>
-        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Greed</p>
+        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p>
       </div>
     </div>
   );

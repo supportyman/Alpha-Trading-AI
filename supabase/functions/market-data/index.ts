@@ -9,6 +9,28 @@ const corsHeaders = {
 const COINGECKO_API = "https://api.coingecko.com/api/v3";
 const BINANCE_API = "https://api.binance.com/api/v3";
 
+// ---- Free-tier API protection: per-isolate TTL cache ----
+type CacheEntry = { t: number; v: unknown };
+const CACHE: Map<string, CacheEntry> =
+  ((globalThis as any).__marketDataCache ?? ((globalThis as any).__marketDataCache = new Map()));
+
+async function cached<T>(key: string, ttlMs: number, fn: () => Promise<T>): Promise<T> {
+  const hit = CACHE.get(key);
+  if (hit && Date.now() - hit.t < ttlMs) return hit.v as T;
+  const v = await fn();
+  CACHE.set(key, { t: Date.now(), v });
+  return v;
+}
+
+// Cached wrappers — original function bodies untouched (renamed to *Raw below)
+const fetchTickers = () => cached("tickers", 5_000, fetchTickersRaw);
+const fetchSentiment = () => cached("sentiment", 30_000, fetchSentimentRaw);
+const fetchCryptoNews = () => cached("news", 120_000, fetchCryptoNewsRaw);
+const fetchEconomicCalendar = () => cached("calendar", 300_000, fetchEconomicCalendarRaw);
+const fetchBinanceKlines = (symbol: string, interval: string, limit = 200) =>
+  cached(`klines:${symbol}:${interval}:${limit}`, 10_000, () =>
+    fetchBinanceKlinesRaw(symbol, interval, limit));
+
 const COIN_IDS: Record<string, string> = {
   BTC: "bitcoin",
   ETH: "ethereum",
@@ -71,7 +93,7 @@ interface BinanceKline {
   trades: number;
 }
 
-async function fetchTickers(): Promise<Record<string, {
+async function fetchTickersRaw(): Promise<Record<string, {
   price: number; change24h: number; high24h: number; low24h: number;
   volume24h: number; marketCap: number; sparkline: number[];
 }>> {
@@ -96,7 +118,7 @@ async function fetchTickers(): Promise<Record<string, {
   return map;
 }
 
-async function fetchBinanceKlines(symbol: string, interval: string, limit = 200): Promise<{
+async function fetchBinanceKlinesRaw(symbol: string, interval: string, limit = 200): Promise<{
   candles: { time: string; open: number; high: number; low: number; close: number; volume: number }[];
 }> {
   const binanceSymbol = `${symbol}USDT`;
@@ -143,7 +165,7 @@ async function fetchBinanceTickers(): Promise<Record<string, { change24h: number
   return map;
 }
 
-async function fetchSentiment() {
+async function fetchSentimentRaw() {
   // Try CoinGecko first; fall back to Binance 24h tickers (no rate-limit auth needed)
   let tickers: Record<string, { change24h: number; volume24h: number; price?: number }>;
   try {
@@ -220,9 +242,31 @@ async function fetchSentiment() {
 
   topCoins.sort((a, b) => b.mentions - a.mentions);
 
+  // Real Fear & Greed index — alternative.me (free public API, updated daily)
+  let fng: { value: number; label: string; source: string } | null = null;
+  try {
+    const fngResp = await fetch("https://api.alternative.me/fng/?limit=1", {
+      headers: { Accept: "application/json" },
+    });
+    if (fngResp.ok) {
+      const fngData = await fngResp.json() as { data?: { value?: string; value_classification?: string }[] };
+      const d = fngData?.data?.[0];
+      if (d?.value) {
+        fng = {
+          value: parseInt(d.value, 10),
+          label: d.value_classification || "",
+          source: "alternative.me",
+        };
+      }
+    }
+  } catch {
+    // keep fng = null; client falls back to the derived score
+  }
+
   return {
     score,
     mood: moodFromScore(score),
+    fng,
     twitter: twitterScore,
     reddit: redditScore,
     telegram: telegramScore,
@@ -232,7 +276,7 @@ async function fetchSentiment() {
   };
 }
 
-async function fetchCryptoNews(): Promise<{
+async function fetchCryptoNewsRaw(): Promise<{
   id: string; title: string; source: string; sentiment: "bullish" | "bearish" | "neutral";
   impact: "high" | "medium" | "low"; time: string; category: string; summary: string; url: string;
 }[]> {
@@ -427,7 +471,7 @@ function ffImpactToOurImpact(impact: string): "high" | "medium" | "low" {
   return "low";
 }
 
-async function fetchEconomicCalendar(): Promise<{
+async function fetchEconomicCalendarRaw(): Promise<{
   id: string; title: string; country: string; currency: string;
   impact: "high" | "medium" | "low"; time: string; date: string;
   actual: string | null; forecast: string | null; previous: string | null;
@@ -509,6 +553,7 @@ async function fetchEconomicCalendar(): Promise<{
         impact,
         time: timeStr,
         date: dateStr,
+        timestamp: eventDate.getTime(),
         actual: e.actual && e.actual.trim() !== "" ? e.actual : null,
         forecast: e.forecast && e.forecast.trim() !== "" ? e.forecast : null,
         previous: e.previous && e.previous.trim() !== "" ? e.previous : null,
@@ -602,6 +647,65 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ coins }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
+    }
+
+    if (action === "global") {
+      // Real global market data — CoinGecko /global (free)
+      try {
+        const g = await cached("global-market", 60_000, async () => {
+          const resp = await fetch(`${COINGECKO_API}/global`, { headers: { Accept: "application/json" } });
+          if (!resp.ok) throw new Error(`CoinGecko /global failed: ${resp.status}`);
+          const payload = await resp.json() as { data?: Record<string, any> };
+          const d = payload.data || {};
+          return {
+            marketCap: d.total_market_cap?.usd ?? null,
+            volume24h: d.total_volume?.usd ?? null,
+            btcDominance: d.market_cap_percentage?.btc ?? null,
+            ethDominance: d.market_cap_percentage?.eth ?? null,
+            marketCapChange24h: d.market_cap_change_percentage_24h_usd ?? null,
+            activeCoins: d.active_cryptocurrencies ?? null,
+            updatedAt: d.updated_at ?? null,
+            source: "CoinGecko",
+          };
+        });
+        return new Response(JSON.stringify(g), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      } catch (globalErr) {
+        return new Response(
+          JSON.stringify({ error: globalErr instanceof Error ? globalErr.message : "Global data failed" }),
+          { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+    }
+
+    if (action === "trending") {
+      // Real trending coins — CoinGecko /search/trending (free)
+      try {
+        const t = await cached("coingecko-trending", 300_000, async () => {
+          const resp = await fetch(`${COINGECKO_API}/search/trending`, { headers: { Accept: "application/json" } });
+          if (!resp.ok) throw new Error(`CoinGecko trending failed: ${resp.status}`);
+          const payload = await resp.json() as { coins?: any[] };
+          const coins = (payload.coins || []).slice(0, 7).map((c: any) => ({
+            id: c.item?.id ?? null,
+            symbol: c.item?.symbol ?? "",
+            name: c.item?.name ?? "",
+            rank: c.item?.market_cap_rank ?? null,
+            price: c.item?.data?.price ?? null,
+            change24h: c.item?.data?.price_change_percentage_24h ?? null,
+            volume: c.item?.data?.total_volume ?? null,
+          }));
+          return { coins, source: "CoinGecko trending searches" };
+        });
+        return new Response(JSON.stringify(t), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      } catch (trendErr) {
+        return new Response(
+          JSON.stringify({ error: trendErr instanceof Error ? trendErr.message : "Trending failed" }),
+          { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
     }
 
     if (action === "klines") {
@@ -759,6 +863,117 @@ Deno.serve(async (req: Request) => {
       }
 
       return new Response(JSON.stringify({ reply }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    if (action === "ai-chart") {
+      // POST body: { image: "<base64 without data: prefix>", mime: "image/png", symbol?: "BTC/USDT", timeframe?: "4H" }
+      let body: any = null;
+      try {
+        body = await req.json();
+      } catch {
+        return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
+          status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const imageB64 = typeof body?.image === "string" ? body.image.replace(/^data:[^,]+,/, "") : "";
+      if (!imageB64) {
+        return new Response(JSON.stringify({ error: "Missing image (base64)" }), {
+          status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (imageB64.length > 14_000_000) {
+        return new Response(JSON.stringify({ error: "Image too large (max ~10MB)" }), {
+          status: 413, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      // Gemini key — same loader order as ai-chat (env secret, else ai_config table)
+      const chartSupabaseUrl = Deno.env.get("SUPABASE_URL") || "";
+      const chartServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+      let chartGeminiKey = Deno.env.get("GEMINI_API_KEY");
+      if (!chartGeminiKey && chartSupabaseUrl && chartServiceKey) {
+        try {
+          const dbResp = await fetch(`${chartSupabaseUrl}/rest/v1/ai_config?key_name=eq.GEMINI_API_KEY&select=key_value`, {
+            headers: {
+              apikey: chartServiceKey,
+              Authorization: `Bearer ${chartServiceKey}`,
+              "Content-Type": "application/json",
+            },
+          });
+          if (dbResp.ok) {
+            const rows = await dbResp.json() as { key_value: string }[];
+            if (rows.length > 0 && rows[0].key_value) chartGeminiKey = rows[0].key_value;
+          }
+        } catch { /* fall through */ }
+      }
+
+      if (!chartGeminiKey) {
+        return new Response(JSON.stringify({ error: "AI vision is not configured (no Gemini key)" }), {
+          status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const chartSymbol = typeof body?.symbol === "string" && body.symbol ? body.symbol : "this market";
+      const chartTf = typeof body?.timeframe === "string" && body.timeframe ? ` on the ${body.timeframe} timeframe` : "";
+      const chartPrompt =
+        `You are a professional crypto trading analyst. Analyze this trading chart screenshot for ${chartSymbol}${chartTf}. ` +
+        `Respond ONLY with a raw JSON object (no markdown fences, no commentary) in exactly this shape: ` +
+        `{"bias":"bullish"|"bearish"|"neutral","confidence":0-100,"summary":"2-3 sentence overview",` +
+        `"key_levels":[{"price":number,"type":"support"|"resistance","strength":"strong"|"moderate"|"weak"}],` +
+        `"order_blocks":[{"type":"bullish"|"bearish","zone":"$x - $y"}],` +
+        `"fvg":[{"type":"bullish"|"bearish","zone":"$x - $y"}],` +
+        `"entry_zones":[number],"risk_notes":["short warning"]}. ` +
+        `Use the actual price levels visible on the chart. If the image is not a recognizable trading chart, ` +
+        `respond with exactly: {"error":"Not a recognizable trading chart"}.`;
+
+      const chartContents = [
+        {
+          role: "user",
+          parts: [
+            { text: chartPrompt },
+            { inline_data: { mime_type: (typeof body?.mime === "string" && body.mime) || "image/png", data: imageB64 } },
+          ],
+        },
+      ];
+
+      const chartModels = ["gemini-flash-lite-latest", "gemini-3.8-flash", "gemini-3.5-flash-lite"];
+      let chartReply = "";
+
+      for (const model of chartModels) {
+        try {
+          const geminiResp = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${chartGeminiKey}`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                contents: chartContents,
+                generationConfig: { temperature: 0.2, maxOutputTokens: 2048, topP: 0.95 },
+              }),
+            },
+          );
+          if (!geminiResp.ok) continue;
+          const gemData = await geminiResp.json();
+          chartReply = gemData?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+          if (chartReply) break;
+        } catch { /* try next model */ }
+      }
+
+      if (!chartReply) {
+        return new Response(JSON.stringify({ error: "AI vision service unavailable — try again shortly" }), {
+          status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      // Strip markdown fences if the model added them, then parse
+      const cleaned = chartReply.replace(/```json\s*/gi, "").replace(/```/g, "").trim();
+      let analysis: unknown = null;
+      try { analysis = JSON.parse(cleaned); } catch { analysis = { summary: cleaned, bias: "neutral", confidence: 50, key_levels: [], order_blocks: [], fvg: [], entry_zones: [], risk_notes: [] }; }
+
+      return new Response(JSON.stringify({ analysis }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }

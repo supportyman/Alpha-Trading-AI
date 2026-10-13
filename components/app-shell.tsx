@@ -26,7 +26,6 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import type { ViewKey } from '@/lib/types';
-import { EXCHANGES } from '@/lib/market-data';
 
 interface NavItem {
   key: ViewKey;
@@ -114,7 +113,7 @@ export function AppShell({ activeView, onNavigate, children }: AppShellProps) {
                         variant="secondary"
                         className="ml-auto bg-primary/15 px-1.5 py-0 text-[10px] text-primary"
                       >
-                        4
+                        Live
                       </Badge>
                     )}
                     {item.key === 'scanner' && (
@@ -143,7 +142,7 @@ export function AppShell({ activeView, onNavigate, children }: AppShellProps) {
             <span className="text-xs font-medium">Engine Online</span>
           </div>
           <p className="text-[11px] leading-relaxed text-muted-foreground">
-            Monitoring 15 pairs across {EXCHANGES.length} exchanges. Last scan 2s ago.
+            Scanning 15 major coins via live exchange feeds.
           </p>
         </div>
       </div>

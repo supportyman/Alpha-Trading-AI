@@ -40,6 +40,21 @@ interface AnalysisResult {
   summary: string;
 }
 
+interface VisionKeyLevel { price: number; type: 'support' | 'resistance'; strength: string }
+interface VisionOB { type: 'bullish' | 'bearish'; zone: string }
+interface VisionFVG { type: 'bullish' | 'bearish'; zone: string }
+interface VisionResult {
+  bias: 'bullish' | 'bearish' | 'neutral';
+  confidence: number;
+  summary: string;
+  key_levels: VisionKeyLevel[];
+  order_blocks: VisionOB[];
+  fvg: VisionFVG[];
+  entry_zones: number[];
+  risk_notes: string[];
+  error?: string;
+}
+
 async function fetchCandles(symbol: string): Promise<Candle[]> {
   const resp = await fetch(
     `${EDGE_FUNCTION_URL}?action=klines&symbol=${symbol}&timeframe=240`,
@@ -122,7 +137,7 @@ function analyzeCandles(candles: Candle[], symbol: string, livePrice: number): A
     : resistance - obOffset;
   const obType = direction === 'bullish' ? 'bullish' : 'bearish';
 
-  // Fair Value Gap: midpoint between swing and current
+  // Fair Value Gap: midpoint between swing and current (estimated)
   const fvgPrice = direction === 'bullish'
     ? price - atr * 0.6
     : price + atr * 0.6;
@@ -205,6 +220,10 @@ export function ChartAiView() {
   const [analyzing, setAnalyzing] = useState(false);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [vision, setVision] = useState<VisionResult | null>(null);
+  const [visionLoading, setVisionLoading] = useState(false);
+  const [visionError, setVisionError] = useState<string | null>(null);
+  const [uploadedName, setUploadedName] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const runAnalysis = async (symbolOverride?: string) => {
@@ -235,10 +254,73 @@ export function ChartAiView() {
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      // For uploaded charts, default to the top coin (BTC) with live data
-      runAnalysis('BTCUSDT');
-    }
+    if (!file) return;
+    e.target.value = '';
+    setUploadedName(file.name);
+    setVision(null);
+    setVisionError(null);
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = async () => {
+        // Downscale to ≤1600px JPEG to stay under payload limits
+        const maxSide = 1600;
+        let { width, height } = img;
+        if (width > maxSide || height > maxSide) {
+          const scale = maxSide / Math.max(width, height);
+          width = Math.round(width * scale);
+          height = Math.round(height * scale);
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          setVisionError('Could not process image in this browser');
+          return;
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        const base64 = dataUrl.split(',')[1] || '';
+
+        const symbolRaw = inputValue.trim() ? parseSymbol(inputValue.trim()) : 'BTCUSDT';
+
+        setVisionLoading(true);
+        try {
+          const resp = await fetch(`${EDGE_FUNCTION_URL}?action=ai-chart`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${ANON_KEY}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              image: base64,
+              mime: 'image/jpeg',
+              symbol: symbolRaw,
+              timeframe: '4H',
+            }),
+          });
+          if (!resp.ok) {
+            const errBody = await resp.json().catch(() => ({}));
+            throw new Error(errBody?.error || `HTTP ${resp.status}`);
+          }
+          const json = await resp.json();
+          if (json?.analysis?.error) {
+            setVisionError(json.analysis.error);
+          } else if (json?.analysis) {
+            setVision(json.analysis as VisionResult);
+          } else {
+            setVisionError('Empty analysis response');
+          }
+        } catch (err) {
+          setVisionError(err instanceof Error ? err.message : 'Vision analysis failed');
+        } finally {
+          setVisionLoading(false);
+        }
+      };
+      img.onerror = () => setVisionError('Could not load image file');
+      img.src = typeof reader.result === 'string' ? reader.result : '';
+    };
+    reader.onerror = () => setVisionError('Could not read file');
+    reader.readAsDataURL(file);
   };
 
   const isLong = result?.direction === 'bullish';
@@ -265,8 +347,11 @@ export function ChartAiView() {
               </div>
               <p className="text-sm font-medium">Upload chart screenshot</p>
               <p className="mt-1 text-xs text-muted-foreground">
-                PNG, JPG up to 10MB — or paste from clipboard
+                PNG, JPG up to 10MB — analyzed by Gemini vision AI
               </p>
+              {uploadedName && !visionLoading && !vision && !visionError && (
+                <p className="mt-1 text-[11px] text-primary">Reading {uploadedName}…</p>
+              )}
               <Button variant="outline" size="sm" className="mt-3" onClick={(e) => { e.stopPropagation(); fileRef.current?.click(); }}>
                 <Upload className="mr-1.5 h-3.5 w-3.5" /> Choose file
               </Button>
@@ -350,7 +435,84 @@ export function ChartAiView() {
             </div>
           </CardHeader>
           <CardContent>
-            {!result && !analyzing && !error && (
+            {/* Gemini vision analysis — shown first when a chart was uploaded */}
+            {(visionLoading || visionError || vision) && (
+              <div className="mb-4 space-y-2 rounded-lg border border-primary/20 bg-primary/5 p-3">
+                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-primary">
+                  <Sparkles className="h-3.5 w-3.5" />
+                  Gemini Vision (uploaded chart)
+                </div>
+                {visionLoading && (
+                  <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
+                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary/20 border-t-primary" />
+                    Sending image to Gemini vision…
+                  </div>
+                )}
+                {visionError && !visionLoading && (
+                  <p className="py-2 text-xs text-destructive">{visionError}</p>
+                )}
+                {vision && !visionLoading && (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 text-sm">
+                      {vision.bias === 'bullish' ? (
+                        <TrendingUp className="h-4 w-4 text-success" />
+                      ) : vision.bias === 'bearish' ? (
+                        <TrendingDown className="h-4 w-4 text-destructive" />
+                      ) : (
+                        <Activity className="h-4 w-4 text-muted-foreground" />
+                      )}
+                      <span className="font-semibold capitalize">{vision.bias}</span>
+                      <Badge variant="outline" className={cn(
+                        vision.bias === 'bullish' ? 'border-success/40 text-success' :
+                        vision.bias === 'bearish' ? 'border-destructive/40 text-destructive' :
+                        'border-border text-muted-foreground'
+                      )}>
+                        {vision.confidence ?? 50}% confidence
+                      </Badge>
+                    </div>
+                    {vision.summary && (
+                      <p className="text-xs leading-relaxed text-muted-foreground">{vision.summary}</p>
+                    )}
+                    {(vision.key_levels?.length ?? 0) > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {vision.key_levels.map((kl, i) => (
+                          <Badge key={i} variant="outline" className={cn(
+                            'text-[10px]',
+                            kl.type === 'support' ? 'border-success/40 text-success' : 'border-destructive/40 text-destructive'
+                          )}>
+                            {kl.type === 'support' ? 'S' : 'R'} ${formatPrice(kl.price)} · {kl.strength}
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
+                    {(vision.order_blocks?.length ?? 0) > 0 && (
+                      <p className="text-[11px] text-muted-foreground">
+                        OB: {vision.order_blocks.map((o) => `${o.type} ${o.zone}`).join(' · ')}
+                      </p>
+                    )}
+                    {(vision.fvg?.length ?? 0) > 0 && (
+                      <p className="text-[11px] text-muted-foreground">
+                        FVG: {vision.fvg.map((f) => `${f.type} ${f.zone}`).join(' · ')}
+                      </p>
+                    )}
+                    {(vision.entry_zones?.length ?? 0) > 0 && (
+                      <p className="text-[11px] text-muted-foreground">
+                        Entry zones: {vision.entry_zones.map((z) => `$${formatPrice(z)}`).join(', ')}
+                      </p>
+                    )}
+                    {(vision.risk_notes?.length ?? 0) > 0 && (
+                      <ul className="list-inside list-disc space-y-0.5">
+                        {vision.risk_notes.map((r, i) => (
+                          <li key={i} className="text-[11px] text-warning">{r}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {!result && !analyzing && !error && !visionLoading && !vision && !visionError && (
               <div className="flex h-full min-h-[300px] flex-col items-center justify-center text-center text-muted-foreground">
                 <ScanLine className="mb-3 h-10 w-10 opacity-30" />
                 <p className="text-sm">Upload a chart or enter a symbol to begin</p>

@@ -64,6 +64,7 @@ export function useLiveKlines(symbol: string, timeframe: string) {
   const [candles, setCandles] = useState<{ time: string; open: number; high: number; low: number; close: number; volume: number }[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [usingLive, setUsingLive] = useState(false);
 
   const binanceSymbol = symbol.replace('/', '').replace('USDT', 'USDT');
 
@@ -84,11 +85,13 @@ export function useLiveKlines(symbol: string, timeframe: string) {
       if (data.candles && Array.isArray(data.candles)) {
         setCandles(data.candles);
         setError(null);
+        setUsingLive(true);
       } else {
         throw new Error('No candle data');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Fetch failed');
+      setUsingLive(false);
       // Fallback to generated candles
       const { genCandles } = await import('./market-data');
       setCandles(genCandles(symbol, timeframe as any, 60));
@@ -103,7 +106,7 @@ export function useLiveKlines(symbol: string, timeframe: string) {
     return () => clearInterval(timer);
   }, [fetchKlines]);
 
-  return { candles, loading, error };
+  return { candles, loading, error, usingLive };
 }
 
 export function formatPrice(n: number | null | undefined): string {
@@ -114,6 +117,7 @@ export function formatPrice(n: number | null | undefined): string {
 }
 
 export function formatCompact(n: number): string {
+  if (n >= 1e12) return `$${(n / 1e12).toFixed(2)}T`;
   if (n >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
   if (n >= 1e6) return `$${(n / 1e6).toFixed(1)}M`;
   if (n >= 1e3) return `$${(n / 1e3).toFixed(1)}K`;

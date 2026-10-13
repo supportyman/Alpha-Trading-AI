@@ -34,7 +34,7 @@ const SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'BNB/USDT', 'AV
 export function TechnicalView() {
   const [symbol, setSymbol] = useState('BTC/USDT');
   const [timeframe, setTimeframe] = useState<Timeframe>('4H');
-  const { candles, loading } = useLiveKlines(symbol, timeframe);
+  const { candles, loading, usingLive } = useLiveKlines(symbol, timeframe);
 
   const indicators = useMemo<IndicatorReading[]>(() => {
     if (candles.length < 30) return [];
@@ -101,8 +101,11 @@ export function TechnicalView() {
             </CardTitle>
             <div className="flex items-center gap-2">
               {loading && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
-              <Badge variant="outline" className="text-[10px] font-normal border-success/40 text-success">
-                Live
+              <Badge variant="outline" className={cn(
+                'text-[10px] font-normal',
+                usingLive ? 'border-success/40 text-success' : 'border-border text-muted-foreground'
+              )}>
+                {usingLive ? 'Live' : 'Demo data'}
               </Badge>
               <Badge
                 variant="outline"
