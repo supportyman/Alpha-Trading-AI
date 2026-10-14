@@ -146,7 +146,7 @@ export function SentimentView() {
                   </div>
                   <div className="text-right">
                     {t.price !== null && (
-                      <p className="text-xs font-semibold">${formatCompact(t.price)}</p>
+                      <p className="text-xs font-semibold">{formatCompact(t.price)}</p>
                     )}
                     {t.change24h !== null ? (
                       <Badge
