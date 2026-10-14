@@ -686,14 +686,24 @@ Deno.serve(async (req: Request) => {
           const resp = await fetch(`${COINGECKO_API}/search/trending`, { headers: { Accept: "application/json" } });
           if (!resp.ok) throw new Error(`CoinGecko trending failed: ${resp.status}`);
           const payload = await resp.json() as { coins?: any[] };
+          // CoinGecko trending values may be plain numbers or currency dicts ({usd, btc, ...})
+          const num = (v: any): number | null => {
+            if (typeof v === "number" && isFinite(v)) return v;
+            if (v && typeof v === "object") {
+              for (const k of ["usd", "btc", "eth"]) {
+                if (typeof v[k] === "number" && isFinite(v[k])) return v[k];
+              }
+            }
+            return null;
+          };
           const coins = (payload.coins || []).slice(0, 7).map((c: any) => ({
             id: c.item?.id ?? null,
             symbol: c.item?.symbol ?? "",
             name: c.item?.name ?? "",
             rank: c.item?.market_cap_rank ?? null,
-            price: c.item?.data?.price ?? null,
-            change24h: c.item?.data?.price_change_percentage_24h ?? null,
-            volume: c.item?.data?.total_volume ?? null,
+            price: num(c.item?.data?.price),
+            change24h: num(c.item?.data?.price_change_percentage_24h),
+            volume: num(c.item?.data?.total_volume),
           }));
           return { coins, source: "CoinGecko trending searches" };
         });

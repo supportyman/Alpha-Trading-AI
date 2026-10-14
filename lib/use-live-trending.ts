@@ -30,7 +30,29 @@ export function useLiveTrending(intervalMs = 300000) {
       const json = await resp.json();
       if (json?.error) throw new Error(String(json.error));
       if (Array.isArray(json?.coins)) {
-        setCoins(json.coins as TrendingCoin[]);
+        // Normalize: CoinGecko values can arrive as currency dicts instead of numbers
+        const toNum = (v: unknown): number | null => {
+          if (typeof v === 'number' && isFinite(v)) return v;
+          if (v && typeof v === 'object') {
+            const o = v as Record<string, unknown>;
+            for (const k of ['usd', 'btc', 'eth']) {
+              const val = o[k];
+              if (typeof val === 'number' && isFinite(val)) return val;
+            }
+          }
+          return null;
+        };
+        setCoins(
+          (json.coins as any[]).map((c) => ({
+            id: c?.id ?? null,
+            symbol: String(c?.symbol ?? ''),
+            name: String(c?.name ?? ''),
+            rank: typeof c?.rank === 'number' ? c.rank : null,
+            price: toNum(c?.price),
+            change24h: toNum(c?.change24h),
+            volume: toNum(c?.volume),
+          }))
+        );
         setUsingLive(true);
         setError(null);
       }
