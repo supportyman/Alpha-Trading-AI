@@ -56,13 +56,9 @@ interface VisionResult {
 }
 
 async function fetchCandles(symbol: string): Promise<Candle[]> {
-  const resp = await fetch(
-    `${EDGE_FUNCTION_URL}?action=klines&symbol=${symbol}&timeframe=240`,
-    { headers: { Authorization: `Bearer ${ANON_KEY}`, 'Content-Type': 'application/json' } }
-  );
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-  const data = await resp.json();
-  return data.candles || [];
+  // Direct Binance — Edge Function 402 bypass.
+  const { fetchKlinesDirect } = await import('@/lib/binance-direct');
+  return fetchKlinesDirect(symbol, '240');
 }
 
 function calcRSI(closes: number[], period = 14): number {

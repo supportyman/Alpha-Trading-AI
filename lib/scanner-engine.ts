@@ -16,6 +16,7 @@ import {
   detectMarketRegime,
 } from './indicators';
 import type { Coin, ScannerResult, StrategyType, Timeframe, SignalDirection } from './types';
+import { fetchKlinesDirect } from './binance-direct';
 
 const EDGE_FUNCTION_URL = `${process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || ''}/functions/v1/market-data`;
 const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
@@ -35,13 +36,14 @@ const TF_INTERVAL_MAP: Record<Timeframe, string> = {
 };
 
 async function fetchKlines(binanceSymbol: string, tf: Timeframe): Promise<Candle[]> {
-  const resp = await fetch(
-    `${EDGE_FUNCTION_URL}?action=klines&symbol=${binanceSymbol}&timeframe=${TF_INTERVAL_MAP[tf] || '240'}`,
-    { headers: { Authorization: `Bearer ${ANON_KEY}`, 'Content-Type': 'application/json' } }
-  );
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-  const data = await resp.json();
-  return data.candles || [];
+  // Direct Binance public API (CORS *) — Supabase Edge Function quota se bachat.
+  // Cache 60s, isliye 5 timeframes × 19 coins bhi sirf 95 requests, aur purani
+  // calls cache se milti hain. Edge function ab fallback bhi nahi — 402 deta hai.
+  try {
+    return await fetchKlinesDirect(binanceSymbol, TF_INTERVAL_MAP[tf] || '240');
+  } catch {
+    return [];
+  }
 }
 
 interface TFAnalysis {

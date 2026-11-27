@@ -63,13 +63,9 @@ interface Candle {
 }
 
 async function fetchKlines(symbol: string, timeframe: string): Promise<Candle[]> {
-  const resp = await fetch(
-    `${EDGE_FUNCTION_URL}?action=klines&symbol=${symbol}&timeframe=${timeframe}`,
-    { headers: { Authorization: `Bearer ${ANON_KEY}`, 'Content-Type': 'application/json' } }
-  );
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-  const data = await resp.json();
-  return data.candles || [];
+  // Direct Binance — Supabase Edge Function 402 se bypass.
+  const { fetchKlinesDirect } = await import('@/lib/binance-direct');
+  return fetchKlinesDirect(symbol, timeframe);
 }
 
 function tfLabel(value: string): string {

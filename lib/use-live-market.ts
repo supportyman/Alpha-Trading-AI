@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { INITIAL_COINS, tickCoin } from './market-data';
 import type { Coin } from './types';
+import { fetchCoinsDirect, fetchCoinsFallback, fetchKlinesDirect } from './binance-direct';
 
 const EDGE_FUNCTION_URL = `${process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || ''}/functions/v1/market-data`;
 const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
@@ -14,18 +15,15 @@ export function useLiveMarket(intervalMs = 5000) {
 
   const fetchLive = useCallback(async () => {
     try {
-      const resp = await fetch(`${EDGE_FUNCTION_URL}?action=tickers`, {
-        headers: {
-          Authorization: `Bearer ${ANON_KEY}`,
-          'Content-Type': 'application/json',
-        },
-      });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const data = await resp.json();
-      if (!data.coins || !Array.isArray(data.coins) || data.coins.length === 0) {
-        throw new Error('No coin data');
+      // Direct CoinGecko → Binance fallback. Supabase Edge Function ab 402 deti hai.
+      let live: Coin[];
+      try {
+        live = await fetchCoinsDirect();
+      } catch {
+        live = await fetchCoinsFallback();
       }
-      setCoins(data.coins);
+      if (!live || live.length === 0) throw new Error('No coin data');
+      setCoins(live);
       setUsingLive(true);
     } catch {
       setUsingLive(false);
@@ -71,24 +69,11 @@ export function useLiveKlines(symbol: string, timeframe: string) {
   const fetchKlines = useCallback(async () => {
     try {
       setLoading(true);
-      const resp = await fetch(
-        `${EDGE_FUNCTION_URL}?action=klines&symbol=${binanceSymbol}&timeframe=${timeframe}`,
-        {
-          headers: {
-            Authorization: `Bearer ${ANON_KEY}`,
-            'Content-Type': 'application/json',
-          },
-        }
-      );
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const data = await resp.json();
-      if (data.candles && Array.isArray(data.candles)) {
-        setCandles(data.candles);
-        setError(null);
-        setUsingLive(true);
-      } else {
-        throw new Error('No candle data');
-      }
+      const rows = await fetchKlinesDirect(binanceSymbol, timeframe);
+      if (!rows || rows.length === 0) throw new Error('No candle data');
+      setCandles(rows);
+      setError(null);
+      setUsingLive(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Fetch failed');
       setUsingLive(false);

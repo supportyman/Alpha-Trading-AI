@@ -16,6 +16,7 @@ import {
   detectMarketRegime,
 } from './indicators';
 import type { Coin, TradeSignal } from './types';
+import { fetchKlinesDirect } from './binance-direct';
 
 const EDGE_FUNCTION_URL = `${process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || ''}/functions/v1/market-data`;
 const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
@@ -30,18 +31,12 @@ interface Candle {
 }
 
 async function fetchKlines(binanceSymbol: string, timeframe: string): Promise<Candle[]> {
-  const resp = await fetch(
-    `${EDGE_FUNCTION_URL}?action=klines&symbol=${binanceSymbol}&timeframe=${timeframe}`,
-    {
-      headers: {
-        Authorization: `Bearer ${ANON_KEY}`,
-        'Content-Type': 'application/json',
-      },
-    }
-  );
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-  const data = await resp.json();
-  return data.candles || [];
+  // Direct Binance — Supabase Edge Function 402/quota ka bypass.
+  try {
+    return await fetchKlinesDirect(binanceSymbol, timeframe);
+  } catch {
+    return [];
+  }
 }
 
 interface IndicatorRead {
