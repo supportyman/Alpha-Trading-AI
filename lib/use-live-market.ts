@@ -18,9 +18,11 @@ export function useLiveMarket(intervalMs = 5000) {
       // Direct CoinGecko → Binance fallback. Supabase Edge Function ab 402 deti hai.
       let live: Coin[];
       try {
-        live = await fetchCoinsDirect();
-      } catch {
+        // Binance 24hr ticker sabse reliable — ek call me saare coins ki LIVE price.
+        // CoinGecko rate-limit (429) ho sakta hai, isliye secondary nahi primary.
         live = await fetchCoinsFallback();
+      } catch {
+        live = await fetchCoinsDirect();
       }
       if (!live || live.length === 0) throw new Error('No coin data');
       setCoins(live);
